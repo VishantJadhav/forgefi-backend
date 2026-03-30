@@ -21,7 +21,7 @@ pub mod forgefi {
 
         // --- IRON MATRIX INIT ---
         user_stake.days_completed = 0;
-        user_stake.missed_days = 0; // NEW: Initialize the failure tracker
+        user_stake.missed_days = 0;
         user_stake.last_check_in = Clock::get()?.unix_timestamp;
         user_stake.bump = ctx.bumps.user_stake;
 
@@ -46,13 +46,11 @@ pub mod forgefi {
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
         // 1. THE GUILLOTINE CHECK (Closing the Loophole)
-        // If they try to verify after 24 hours (86,400 seconds), block it.
-        // FOR DEVNET TESTING: Change 86400 to 120 (2 mins) if testing fast.
-        require!(time_since_last <= 86400, ErrorCode::MissedDeadline);
+        // If they try to verify after 48 hours (172,800 seconds), block it.
+        require!(time_since_last <= 172800, ErrorCode::MissedDeadline);
 
         // 2. THE COOLDOWN CHECK (Anti-Cheat)
         // Only enforce the 12-hour rest IF they have already completed Day 1.
-        // FOR DEVNET TESTING: Change 43200 to 60 (1 min) if testing fast.
         if user_stake.days_completed > 0 {
             require!(time_since_last >= 43200, ErrorCode::WorkoutTooSoon);
         }
@@ -80,7 +78,6 @@ pub mod forgefi {
             ErrorCode::ProtocolNotComplete
         );
 
-        // NOTE: No manual lamport calculation needed!
         // The `close = user` tag in the struct below automatically sweeps
         // the remaining SOL in the PDA vault directly back to the user.
 
@@ -90,18 +87,28 @@ pub mod forgefi {
 
     // 4. THE VAMPIRE (10% Bleed for a missed day)
     pub fn slash_missed_day(ctx: Context<SlashUser>) -> Result<()> {
+        // --- THE SECURITY LOCK ---
+        // Ensure the SOL is routed to the official ForgeFi Treasury ONLY.
+        // Replace this string with your actual Phantom Wallet public key before deploying!
+        let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC"
+            .parse()
+            .unwrap();
+        require!(
+            ctx.accounts.treasury.key() == official_treasury,
+            ErrorCode::UnauthorizedTreasury
+        );
+
         let user_stake = &mut ctx.accounts.user_stake;
         let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
-        // THE GUILLOTINE: 24 hours = 86,400 seconds.
-        // FOR DEVNET TESTING: Change 86400 to 120 (2 minutes) so you can actually test it!
-        require!(time_since_last > 86400, ErrorCode::DeadlineNotPassed);
+        // THE GUILLOTINE: 48 hours = 172,800 seconds.
+        require!(time_since_last > 172800, ErrorCode::DeadlineNotPassed);
 
         // Calculate exactly 10% of their initial locked amount
         let penalty_amount = user_stake.stake_amount / 10;
 
-        // FIX: Use the `user_stake` reference we already created!
+        // Bleed the PDA vault and route to the protocol treasury
         **user_stake.to_account_info().try_borrow_mut_lamports()? -= penalty_amount;
         **ctx
             .accounts
@@ -109,7 +116,7 @@ pub mod forgefi {
             .to_account_info()
             .try_borrow_mut_lamports()? += penalty_amount;
 
-        // Record the failure and reset the 24-hour clock for their next attempt
+        // Record the failure and reset the 48-hour clock for their next attempt
         user_stake.missed_days = user_stake.missed_days.saturating_add(1);
         user_stake.last_check_in = current_time;
 
@@ -128,7 +135,7 @@ pub struct UserStake {
     pub stake_amount: u64,
     pub days_committed: u8,
     pub days_completed: u8,
-    pub missed_days: u8, // <-- NEW: Tracks failed workouts
+    pub missed_days: u8,
     pub last_check_in: i64,
     pub bump: u8,
 }
@@ -141,7 +148,6 @@ pub struct InitializeRoutine<'info> {
     #[account(
         init,
         payer = user,
-        // Memory increased by 1 byte for missed_days: 8+32+8+1+1+1+8+1
         space = 8 + 32 + 8 + 1 + 1 + 1 + 8 + 1, 
         seeds = [b"stake", user.key().as_ref()], 
         bump
@@ -166,7 +172,6 @@ pub struct VerifyWorkout<'info> {
 pub struct ResolveStake<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    // The "close" tag automatically securely empties the vault and refunds storage rent!
     #[account(
         mut,
         close = user, 
@@ -179,13 +184,12 @@ pub struct ResolveStake<'info> {
 #[derive(Accounts)]
 pub struct SlashUser<'info> {
     #[account(mut)]
-    pub liquidator: Signer<'info>, // The bot or admin triggering the execution
+    pub liquidator: Signer<'info>,
 
     /// CHECK: The protocol's Graveyard wallet where slashed SOL is deposited
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
 
-    // Vault survives the slashing. NO `close` tag here.
     #[account(
         mut,
         seeds = [b"stake", user_stake.user.as_ref()], 
@@ -199,12 +203,14 @@ pub struct SlashUser<'info> {
 pub enum ErrorCode {
     #[msg("Muscles need rest. You must wait at least 12 hours between verified workouts.")]
     WorkoutTooSoon,
-    #[msg(
-        "Protocol not complete. You cannot withdraw your stake until all committed days are processed."
-    )]
+    #[msg("Protocol not complete. You cannot withdraw your stake until all committed days are processed.")]
     ProtocolNotComplete,
-    #[msg("The guillotine has not dropped yet. The lifter still has time.")]
+    #[msg(
+        "The guillotine has not dropped yet. The lifter still has time in their 48-hour window."
+    )]
     DeadlineNotPassed,
-    #[msg("You missed your 24-hour window. Your stake is bleeding and awaiting liquidation.")]
+    #[msg("You missed your 48-hour window. Your stake is bleeding and awaiting liquidation.")]
     MissedDeadline,
+    #[msg("Security Alert: Slashed funds can only be routed to the official ForgeFi Treasury.")]
+    UnauthorizedTreasury,
 }
