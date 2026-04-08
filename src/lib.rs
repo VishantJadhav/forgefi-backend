@@ -46,13 +46,13 @@ pub mod forgefi {
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
         // 1. THE GUILLOTINE CHECK (Closing the Loophole)
-        // If they try to verify after 48 hours (172,800 seconds), block it.
-        require!(time_since_last <= 172800, ErrorCode::MissedDeadline);
+        // [DEMO MODE ACTIVATED]: Dropped from 172,800s (48hr) down to 60 seconds
+        require!(time_since_last <= 60, ErrorCode::MissedDeadline);
 
         // 2. THE COOLDOWN CHECK (Anti-Cheat)
-        // Only enforce the 12-hour rest IF they have already completed Day 1.
+        // [DEMO MODE ACTIVATED]: Dropped from 43,200s (12hr) down to 10 seconds
         if user_stake.days_completed > 0 {
-            require!(time_since_last >= 43200, ErrorCode::WorkoutTooSoon);
+            require!(time_since_last >= 10, ErrorCode::WorkoutTooSoon);
         }
 
         // 3. INCREMENT THE MATRIX
@@ -88,8 +88,6 @@ pub mod forgefi {
     // 4. THE VAMPIRE (10% Bleed for a missed day)
     pub fn slash_missed_day(ctx: Context<SlashUser>) -> Result<()> {
         // --- THE SECURITY LOCK ---
-        // Ensure the SOL is routed to the official ForgeFi Treasury ONLY.
-        // Replace this string with your actual Phantom Wallet public key before deploying!
         let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC"
             .parse()
             .unwrap();
@@ -102,8 +100,9 @@ pub mod forgefi {
         let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
-        // THE GUILLOTINE: 48 hours = 172,800 seconds.
-        require!(time_since_last > 172800, ErrorCode::DeadlineNotPassed);
+        // THE GUILLOTINE
+        // [DEMO MODE ACTIVATED]: Dropped from 172,800s (48hr) down to 60 seconds
+        require!(time_since_last > 60, ErrorCode::DeadlineNotPassed);
 
         // Calculate exactly 10% of their initial locked amount
         let penalty_amount = user_stake.stake_amount / 10;
@@ -116,7 +115,7 @@ pub mod forgefi {
             .to_account_info()
             .try_borrow_mut_lamports()? += penalty_amount;
 
-        // Record the failure and reset the 48-hour clock for their next attempt
+        // Record the failure and reset the 60-second clock for their next attempt
         user_stake.missed_days = user_stake.missed_days.saturating_add(1);
         user_stake.last_check_in = current_time;
 
@@ -201,15 +200,13 @@ pub struct SlashUser<'info> {
 // --- CUSTOM ERROR CODES ---
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Muscles need rest. You must wait at least 12 hours between verified workouts.")]
+    #[msg("Muscles need rest. You must wait at least 10 seconds between verified workouts.")]
     WorkoutTooSoon,
     #[msg("Protocol not complete. You cannot withdraw your stake until all committed days are processed.")]
     ProtocolNotComplete,
-    #[msg(
-        "The guillotine has not dropped yet. The lifter still has time in their 48-hour window."
-    )]
+    #[msg("The guillotine has not dropped yet. The lifter still has time in their window.")]
     DeadlineNotPassed,
-    #[msg("You missed your 48-hour window. Your stake is bleeding and awaiting liquidation.")]
+    #[msg("You missed your window. Your stake is bleeding and awaiting liquidation.")]
     MissedDeadline,
     #[msg("Security Alert: Slashed funds can only be routed to the official ForgeFi Treasury.")]
     UnauthorizedTreasury,
