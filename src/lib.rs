@@ -8,11 +8,13 @@ declare_id!("AyN3aAx2VJTSxJGaR5n9Ayhpa6inCAxaSGupxbGw1Rnz");
 pub mod forgefi {
     use super::*;
 
-    // 1. Lock in the routine and transfer the stake to the PDA vault
+    // ==========================================
+    // 1. SINGLE PLAYER: INITIALIZE ROUTINE
+    // ==========================================
     pub fn initialize_routine(
         ctx: Context<InitializeRoutine>,
         stake_amount: u64,
-        days_committed: u8,
+        days_committed: u16,
     ) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
         user_stake.user = *ctx.accounts.user.key;
@@ -39,7 +41,9 @@ pub mod forgefi {
         Ok(())
     }
 
-    // 2. Daily check-in
+    // ==========================================
+    // 2. SINGLE PLAYER: VERIFY WORKOUT
+    // ==========================================
     pub fn verify_workout(ctx: Context<VerifyWorkout>) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
         let current_time = Clock::get()?.unix_timestamp;
@@ -67,7 +71,9 @@ pub mod forgefi {
         Ok(())
     }
 
-    // 3. Finish the sprint and unlock the vault
+    // ==========================================
+    // 3. SINGLE PLAYER: RESOLVE STAKE
+    // ==========================================
     pub fn resolve_stake(ctx: Context<ResolveStake>) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
 
@@ -85,7 +91,9 @@ pub mod forgefi {
         Ok(())
     }
 
+    // ==========================================
     // 4. THE VAMPIRE (10% Bleed for a missed day)
+    // ==========================================
     pub fn slash_missed_day(ctx: Context<SlashUser>) -> Result<()> {
         // --- THE SECURITY LOCK ---
         let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC"
@@ -125,6 +133,108 @@ pub mod forgefi {
         );
         Ok(())
     }
+
+    // ==========================================
+    // 5. THE BLOOD PACT: INITIALIZE SQUAD LOBBY
+    // ==========================================
+    pub fn initialize_squad(
+        ctx: Context<InitializeSquad>,
+        required_stake: u64,
+        days: u16,
+        player_two: Pubkey,
+        player_three: Pubkey, // Pass the System Program ID if it's just a duo
+    ) -> Result<()> {
+        let vault = &mut ctx.accounts.squad_vault;
+        let player_one = &ctx.accounts.player_one;
+
+        // 1. Setup the Database
+        vault.player_one = player_one.key();
+        vault.player_two = player_two;
+        vault.player_three = player_three;
+        vault.required_stake_per_player = required_stake;
+        vault.days_committed = days;
+
+        vault.days_completed = 0;
+        vault.missed_days = 0;
+        vault.bump = ctx.bumps.squad_vault;
+
+        // 2. Player 1 Locks their SOL via CPI
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: player_one.to_account_info(),
+                to: vault.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, required_stake)?;
+
+        // 3. Update the Lobby State
+        vault.total_vault_balance = required_stake;
+        vault.p1_staked = true;
+        vault.p2_staked = false;
+        vault.p3_staked = false;
+        vault.protocol_active = false; // Waiting on the others
+
+        msg!(
+            "Blood Pact forged. Player 1 locked {} lamports. Awaiting squad...",
+            required_stake
+        );
+        Ok(())
+    }
+
+    // ==========================================
+    // 6. THE BLOOD PACT: JOIN SQUAD
+    // ==========================================
+    pub fn join_squad(ctx: Context<JoinSquad>) -> Result<()> {
+        let vault = &mut ctx.accounts.squad_vault;
+        let joining_player = &ctx.accounts.player;
+
+        // 1. Verify this person is actually invited
+        require!(
+            joining_player.key() == vault.player_two || joining_player.key() == vault.player_three,
+            ErrorCode::NotInvited
+        );
+
+        // 2. Transfer their SOL into the Vault via CPI
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: joining_player.to_account_info(),
+                to: vault.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, vault.required_stake_per_player)?;
+
+        // 3. Mark them as Staked
+        if joining_player.key() == vault.player_two {
+            vault.p2_staked = true;
+        } else if joining_player.key() == vault.player_three {
+            vault.p3_staked = true;
+        }
+
+        vault.total_vault_balance += vault.required_stake_per_player;
+
+        // 4. THE ACTIVATION TRIGGER
+        let is_duo = vault.player_three == anchor_lang::solana_program::system_program::ID;
+
+        if (is_duo && vault.p1_staked && vault.p2_staked)
+            || (!is_duo && vault.p1_staked && vault.p2_staked && vault.p3_staked)
+        {
+            vault.protocol_active = true;
+
+            // Start the clocks!
+            let current_time = Clock::get()?.unix_timestamp;
+            vault.p1_last_check_in = current_time;
+            vault.p2_last_check_in = current_time;
+            vault.p3_last_check_in = current_time;
+
+            msg!("ALL PLAYERS LOCKED. THE BLOOD PACT IS ACTIVE.");
+        } else {
+            msg!("Player locked SOL. Waiting for remaining members...");
+        }
+
+        Ok(())
+    }
 }
 
 // --- DATABASE SCHEMA ---
@@ -132,10 +242,30 @@ pub mod forgefi {
 pub struct UserStake {
     pub user: Pubkey,
     pub stake_amount: u64,
-    pub days_committed: u8,
-    pub days_completed: u8,
-    pub missed_days: u8,
+    pub days_committed: u16,
+    pub days_completed: u16,
+    pub missed_days: u16,
     pub last_check_in: i64,
+    pub bump: u8,
+}
+
+#[account]
+pub struct SquadVault {
+    pub player_one: Pubkey,
+    pub player_two: Pubkey,
+    pub player_three: Pubkey,
+    pub required_stake_per_player: u64,
+    pub total_vault_balance: u64,
+    pub days_committed: u16,
+    pub days_completed: u16,
+    pub missed_days: u16,
+    pub p1_staked: bool,
+    pub p2_staked: bool,
+    pub p3_staked: bool,
+    pub protocol_active: bool,
+    pub p1_last_check_in: i64,
+    pub p2_last_check_in: i64,
+    pub p3_last_check_in: i64,
     pub bump: u8,
 }
 
@@ -147,7 +277,7 @@ pub struct InitializeRoutine<'info> {
     #[account(
         init,
         payer = user,
-        space = 8 + 32 + 8 + 1 + 1 + 1 + 8 + 1, 
+        space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1, 
         seeds = [b"stake", user.key().as_ref()], 
         bump
     )]
@@ -185,7 +315,7 @@ pub struct SlashUser<'info> {
     #[account(mut)]
     pub liquidator: Signer<'info>,
 
-    /// CHECK: The protocol's Graveyard wallet where slashed SOL is deposited
+    /// The protocol's Graveyard wallet where slashed SOL is deposited
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
 
@@ -195,6 +325,30 @@ pub struct SlashUser<'info> {
         bump = user_stake.bump
     )]
     pub user_stake: Account<'info, UserStake>,
+}
+
+#[derive(Accounts)]
+pub struct InitializeSquad<'info> {
+    #[account(mut)]
+    pub player_one: Signer<'info>,
+    #[account(
+        init,
+        payer = player_one,
+        space = 8 + 200, // Safe padding for all pubkeys, u64s, and booleans
+        seeds = [b"squad", player_one.key().as_ref()], 
+        bump
+    )]
+    pub squad_vault: Account<'info, SquadVault>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct JoinSquad<'info> {
+    #[account(mut)]
+    pub player: Signer<'info>,
+    #[account(mut)]
+    pub squad_vault: Account<'info, SquadVault>,
+    pub system_program: Program<'info, System>,
 }
 
 // --- CUSTOM ERROR CODES ---
@@ -210,4 +364,6 @@ pub enum ErrorCode {
     MissedDeadline,
     #[msg("Security Alert: Slashed funds can only be routed to the official ForgeFi Treasury.")]
     UnauthorizedTreasury,
+    #[msg("You are not invited to this Blood Pact.")]
+    NotInvited,
 }
