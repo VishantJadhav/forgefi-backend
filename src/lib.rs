@@ -92,7 +92,7 @@ pub mod forgefi {
     }
 
     // ==========================================
-    // 4. THE VAMPIRE (10% Bleed for a missed day)
+    // 4. THE VAMPIRE (Total Liquidation + 10% Bleed)
     // ==========================================
     pub fn slash_missed_day(ctx: Context<SlashUser>) -> Result<()> {
         // --- THE SECURITY LOCK ---
@@ -115,22 +115,56 @@ pub mod forgefi {
         // Calculate exactly 10% of their initial locked amount
         let penalty_amount = user_stake.stake_amount / 10;
 
-        // Bleed the PDA vault and route to the protocol treasury
-        **user_stake.to_account_info().try_borrow_mut_lamports()? -= penalty_amount;
-        **ctx
-            .accounts
+        let current_balance = user_stake.to_account_info().lamports();
+        let rent_minimum = Rent::get()?.minimum_balance(user_stake.to_account_info().data_len());
+
+        // Calculate what we can actually take without deleting the account
+        let available_to_slash = current_balance.saturating_sub(rent_minimum);
+
+        // --- THE TOTAL LIQUIDATION CHECK ---
+        if available_to_slash < penalty_amount {
+            // Sweep all available SOL, but leave the rent alive so the account data survives
+            user_stake
+                .to_account_info()
+                .sub_lamports(available_to_slash)?;
+            ctx.accounts
+                .treasury
+                .to_account_info()
+                .add_lamports(available_to_slash)?;
+
+            // Flag as a Zombie Vault
+            user_stake.missed_days = 999;
+            user_stake.last_check_in = current_time;
+
+            msg!("TOTAL LIQUIDATION: Vault drained. Zombie state triggered.");
+            return Ok(());
+        }
+
+        // --- NORMAL 10% SLASH ---
+        user_stake.to_account_info().sub_lamports(penalty_amount)?;
+        ctx.accounts
             .treasury
             .to_account_info()
-            .try_borrow_mut_lamports()? += penalty_amount;
+            .add_lamports(penalty_amount)?;
 
         // Record the failure and reset the 60-second clock for their next attempt
         user_stake.missed_days = user_stake.missed_days.saturating_add(1);
         user_stake.last_check_in = current_time;
 
         msg!(
-            "SLASHED: Lifter missed a day. 10% of initial stake ({} lamports) bled to the Graveyard.",
+            "SLASHED: Lifter missed a day. {} lamports bled to the Graveyard.",
             penalty_amount
         );
+        Ok(())
+    }
+
+    // ==========================================
+    // 4.5. ACKNOWLEDGE FAILURE (Burn the Zombie)
+    // ==========================================
+    pub fn acknowledge_failure(_ctx: Context<AcknowledgeFailure>) -> Result<()> {
+        // The `close = user` constraint does all the work.
+        // It burns the account and returns the rent dust to the user.
+        msg!("Lifter acknowledged failure. Zombie vault burned. Slate wiped clean.");
         Ok(())
     }
 
@@ -328,6 +362,20 @@ pub struct SlashUser<'info> {
 }
 
 #[derive(Accounts)]
+pub struct AcknowledgeFailure<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+    #[account(
+        mut,
+        close = user, 
+        seeds = [b"stake", user.key().as_ref()], 
+        bump = user_stake.bump,
+        constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie
+    )]
+    pub user_stake: Account<'info, UserStake>,
+}
+
+#[derive(Accounts)]
 pub struct InitializeSquad<'info> {
     #[account(mut)]
     pub player_one: Signer<'info>,
@@ -366,4 +414,6 @@ pub enum ErrorCode {
     UnauthorizedTreasury,
     #[msg("You are not invited to this Blood Pact.")]
     NotInvited,
+    #[msg("You cannot burn this vault. It is not a Zombie.")]
+    NotAZombie,
 }
