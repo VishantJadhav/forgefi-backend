@@ -240,7 +240,6 @@ pub struct UserStake {
     pub bump: u8,
 }
 
-// 🚨 UPGRADED TO V2 🚨
 #[account]
 pub struct SquadVaultV2 {
     pub player_one: Pubkey,
@@ -309,11 +308,13 @@ pub struct AcknowledgeFailure<'info> {
     pub user_stake: Account<'info, UserStake>,
 }
 
+// 🚨 DUAL SEEDS IMPLEMENTED BELOW 🚨
 #[derive(Accounts)]
+#[instruction(required_stake: u64, days: u16, player_two: Pubkey, player_three: Pubkey)] 
 pub struct InitializeSquad<'info> {
     #[account(mut)]
     pub player_one: Signer<'info>,
-    #[account(init, payer = player_one, space = 8 + 200, seeds = [b"squad_v2", player_one.key().as_ref()], bump)]
+    #[account(init, payer = player_one, space = 8 + 200, seeds = [b"squad_v2", player_one.key().as_ref(), player_two.as_ref()], bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -322,7 +323,7 @@ pub struct InitializeSquad<'info> {
 pub struct JoinSquad<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -331,7 +332,7 @@ pub struct JoinSquad<'info> {
 pub struct VerifySquadWorkout<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
