@@ -8,7 +8,11 @@ declare_id!("AyN3aAx2VJTSxJGaR5n9Ayhpa6inCAxaSGupxbGw1Rnz");
 pub mod forgefi {
     use super::*;
 
-    pub fn initialize_routine(ctx: Context<InitializeRoutine>, stake_amount: u64, days_committed: u16) -> Result<()> {
+    pub fn initialize_routine(
+        ctx: Context<InitializeRoutine>,
+        stake_amount: u64,
+        days_committed: u16,
+    ) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
         user_stake.user = *ctx.accounts.user.key;
         user_stake.stake_amount = stake_amount;
@@ -47,13 +51,21 @@ pub mod forgefi {
     pub fn resolve_stake(ctx: Context<ResolveStake>) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
         let total_days_processed = user_stake.days_completed + user_stake.missed_days;
-        require!(total_days_processed >= user_stake.days_committed, ErrorCode::ProtocolNotComplete);
+        require!(
+            total_days_processed >= user_stake.days_committed,
+            ErrorCode::ProtocolNotComplete
+        );
         Ok(())
     }
 
     pub fn slash_missed_day(ctx: Context<SlashUser>) -> Result<()> {
-        let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC".parse().unwrap();
-        require!(ctx.accounts.treasury.key() == official_treasury, ErrorCode::UnauthorizedTreasury);
+        let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC"
+            .parse()
+            .unwrap();
+        require!(
+            ctx.accounts.treasury.key() == official_treasury,
+            ErrorCode::UnauthorizedTreasury
+        );
 
         let user_stake = &mut ctx.accounts.user_stake;
         let current_time = Clock::get()?.unix_timestamp;
@@ -67,15 +79,23 @@ pub mod forgefi {
         let available_to_slash = current_balance.saturating_sub(rent_minimum);
 
         if available_to_slash < penalty_amount {
-            user_stake.to_account_info().sub_lamports(available_to_slash)?;
-            ctx.accounts.treasury.to_account_info().add_lamports(available_to_slash)?;
+            user_stake
+                .to_account_info()
+                .sub_lamports(available_to_slash)?;
+            ctx.accounts
+                .treasury
+                .to_account_info()
+                .add_lamports(available_to_slash)?;
             user_stake.missed_days = 999;
             user_stake.last_check_in = current_time;
             return Ok(());
         }
 
         user_stake.to_account_info().sub_lamports(penalty_amount)?;
-        ctx.accounts.treasury.to_account_info().add_lamports(penalty_amount)?;
+        ctx.accounts
+            .treasury
+            .to_account_info()
+            .add_lamports(penalty_amount)?;
         user_stake.missed_days = user_stake.missed_days.saturating_add(1);
         user_stake.last_check_in = current_time;
         Ok(())
@@ -199,7 +219,7 @@ pub mod forgefi {
         } else {
             vault.p3_workouts
         };
-        
+
         if player_workouts > 0 {
             require!(time_since_last >= 10, ErrorCode::WorkoutTooSoon);
         }
@@ -219,12 +239,82 @@ pub mod forgefi {
         let min_workouts = if is_duo {
             vault.p1_workouts.min(vault.p2_workouts)
         } else {
-            vault.p1_workouts.min(vault.p2_workouts).min(vault.p3_workouts)
+            vault
+                .p1_workouts
+                .min(vault.p2_workouts)
+                .min(vault.p3_workouts)
         };
 
         if min_workouts > vault.days_completed {
             vault.days_completed = min_workouts;
         }
+        Ok(())
+    }
+
+    pub fn slash_squad(ctx: Context<SlashSquad>) -> Result<()> {
+        let official_treasury: Pubkey = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC"
+            .parse()
+            .unwrap();
+        require!(
+            ctx.accounts.treasury.key() == official_treasury,
+            ErrorCode::UnauthorizedTreasury
+        );
+
+        let vault = &mut ctx.accounts.squad_vault;
+        let current_time = Clock::get()?.unix_timestamp;
+
+        // Check the clocks for all active players
+        let p1_time = current_time.saturating_sub(vault.p1_last_check_in);
+        let p2_time = current_time.saturating_sub(vault.p2_last_check_in);
+        let mut p3_time = 0;
+
+        if vault.player_three != Pubkey::default() {
+            p3_time = current_time.saturating_sub(vault.p3_last_check_in);
+        }
+
+        // The Guillotine drops if ANY player is over the 60 second limit
+        require!(
+            p1_time > 60
+                || p2_time > 60
+                || (vault.player_three != Pubkey::default() && p3_time > 60),
+            ErrorCode::DeadlineNotPassed
+        );
+
+        // Calculate a 10% bleed from the total vault
+        let penalty_amount = vault.total_vault_balance / 10;
+        let current_balance = vault.to_account_info().lamports();
+        let rent_minimum = Rent::get()?.minimum_balance(vault.to_account_info().data_len());
+        let available_to_slash = current_balance.saturating_sub(rent_minimum);
+
+        if available_to_slash < penalty_amount {
+            // Liquidate the remaining dust, turn it into a Zombie Vault
+            vault.to_account_info().sub_lamports(available_to_slash)?;
+            ctx.accounts
+                .treasury
+                .to_account_info()
+                .add_lamports(available_to_slash)?;
+            vault.missed_days = 999;
+            vault.p1_last_check_in = current_time;
+            vault.p2_last_check_in = current_time;
+            vault.p3_last_check_in = current_time;
+            return Ok(());
+        }
+
+        // Standard 10% Bleed
+        vault.to_account_info().sub_lamports(penalty_amount)?;
+        ctx.accounts
+            .treasury
+            .to_account_info()
+            .add_lamports(penalty_amount)?;
+        vault.missed_days = vault.missed_days.saturating_add(1);
+
+        // Reset the clocks so they have another 60 seconds to survive
+        vault.p1_last_check_in = current_time;
+        vault.p2_last_check_in = current_time;
+        if vault.player_three != Pubkey::default() {
+            vault.p3_last_check_in = current_time;
+        }
+
         Ok(())
     }
 }
@@ -310,7 +400,7 @@ pub struct AcknowledgeFailure<'info> {
 
 // 🚨 DUAL SEEDS IMPLEMENTED BELOW 🚨
 #[derive(Accounts)]
-#[instruction(required_stake: u64, days: u16, player_two: Pubkey, player_three: Pubkey)] 
+#[instruction(required_stake: u64, days: u16, player_two: Pubkey, player_three: Pubkey)]
 pub struct InitializeSquad<'info> {
     #[account(mut)]
     pub player_one: Signer<'info>,
@@ -336,14 +426,33 @@ pub struct VerifySquadWorkout<'info> {
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
+#[derive(Accounts)]
+pub struct SlashSquad<'info> {
+    #[account(mut)]
+    pub liquidator: Signer<'info>,
+    #[account(mut)]
+    pub treasury: AccountInfo<'info>,
+    // 🚨 Using V2 math here since we reverted to V2 earlier 🚨
+    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    pub squad_vault: Account<'info, SquadVaultV2>,
+}
+
 #[error_code]
 pub enum ErrorCode {
-    #[msg("Muscles need rest. You must wait at least 10 seconds between verified workouts.")] WorkoutTooSoon,
-    #[msg("Protocol not complete. You cannot withdraw your stake until all committed days are processed.")] ProtocolNotComplete,
-    #[msg("The guillotine has not dropped yet. The lifter still has time in their window.")] DeadlineNotPassed,
-    #[msg("You missed your window. Your stake is bleeding and awaiting liquidation.")] MissedDeadline,
-    #[msg("Security Alert: Slashed funds can only be routed to the official ForgeFi Treasury.")] UnauthorizedTreasury,
-    #[msg("You are not invited to this Blood Pact.")] NotInvited,
-    #[msg("You cannot burn this vault. It is not a Zombie.")] NotAZombie,
-    #[msg("The Blood Pact is not active yet. Waiting for all players to join.")] ProtocolNotActive,
+    #[msg("Muscles need rest. You must wait at least 10 seconds between verified workouts.")]
+    WorkoutTooSoon,
+    #[msg("Protocol not complete. You cannot withdraw your stake until all committed days are processed.")]
+    ProtocolNotComplete,
+    #[msg("The guillotine has not dropped yet. The lifter still has time in their window.")]
+    DeadlineNotPassed,
+    #[msg("You missed your window. Your stake is bleeding and awaiting liquidation.")]
+    MissedDeadline,
+    #[msg("Security Alert: Slashed funds can only be routed to the official ForgeFi Treasury.")]
+    UnauthorizedTreasury,
+    #[msg("You are not invited to this Blood Pact.")]
+    NotInvited,
+    #[msg("You cannot burn this vault. It is not a Zombie.")]
+    NotAZombie,
+    #[msg("The Blood Pact is not active yet. Waiting for all players to join.")]
+    ProtocolNotActive,
 }
