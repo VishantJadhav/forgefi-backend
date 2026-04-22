@@ -35,6 +35,7 @@ pub mod forgefi {
 
     pub fn verify_workout(ctx: Context<VerifyWorkout>) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
+        let current_time = Clock::get()?.unix_timestamp;
 
         // Stop them from verifying if the protocol is already over
         require!(
@@ -42,7 +43,6 @@ pub mod forgefi {
             ErrorCode::ProtocolComplete
         );
 
-        let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
         require!(time_since_last <= 60, ErrorCode::MissedDeadline);
@@ -75,6 +75,7 @@ pub mod forgefi {
         );
 
         let user_stake = &mut ctx.accounts.user_stake;
+        let current_time = Clock::get()?.unix_timestamp;
 
         // Stop the executioner from slashing if the protocol is already over
         require!(
@@ -82,7 +83,6 @@ pub mod forgefi {
             ErrorCode::ProtocolComplete
         );
 
-        let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
         require!(time_since_last > 60, ErrorCode::DeadlineNotPassed);
@@ -206,6 +206,13 @@ pub mod forgefi {
 
         require!(vault.protocol_active, ErrorCode::ProtocolNotActive);
 
+        // 🚨 SQUAD CAP: Stop them from verifying if the squad protocol is already over
+        require!(
+            vault.days_completed + vault.missed_days < vault.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
+        // 🚨 COMPILER FIX: Removed mut and = 0
         let time_since_last: i64;
         let mut is_p1 = false;
         let mut is_p2 = false;
@@ -277,7 +284,12 @@ pub mod forgefi {
         let vault = &mut ctx.accounts.squad_vault;
         let current_time = Clock::get()?.unix_timestamp;
 
-        // Check the clocks for all active players
+        // 🚨 SQUAD CAP: Stop the executioner from slashing if the squad protocol is already over
+        require!(
+            vault.days_completed + vault.missed_days < vault.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
         let p1_time = current_time.saturating_sub(vault.p1_last_check_in);
         let p2_time = current_time.saturating_sub(vault.p2_last_check_in);
         let mut p3_time = 0;
@@ -286,7 +298,6 @@ pub mod forgefi {
             p3_time = current_time.saturating_sub(vault.p3_last_check_in);
         }
 
-        // The Guillotine drops if ANY player is over the 60 second limit
         require!(
             p1_time > 60
                 || p2_time > 60
@@ -294,14 +305,12 @@ pub mod forgefi {
             ErrorCode::DeadlineNotPassed
         );
 
-        // Calculate a 10% bleed from the total vault
         let penalty_amount = vault.total_vault_balance / 10;
         let current_balance = vault.to_account_info().lamports();
         let rent_minimum = Rent::get()?.minimum_balance(vault.to_account_info().data_len());
         let available_to_slash = current_balance.saturating_sub(rent_minimum);
 
         if available_to_slash < penalty_amount {
-            // Liquidate the remaining dust, turn it into a Zombie Vault
             vault.to_account_info().sub_lamports(available_to_slash)?;
             ctx.accounts
                 .treasury
@@ -314,7 +323,6 @@ pub mod forgefi {
             return Ok(());
         }
 
-        // Standard 10% Bleed
         vault.to_account_info().sub_lamports(penalty_amount)?;
         ctx.accounts
             .treasury
@@ -322,7 +330,6 @@ pub mod forgefi {
             .add_lamports(penalty_amount)?;
         vault.missed_days = vault.missed_days.saturating_add(1);
 
-        // Reset the clocks so they have another 60 seconds to survive
         vault.p1_last_check_in = current_time;
         vault.p2_last_check_in = current_time;
         if vault.player_three != Pubkey::default() {
@@ -332,8 +339,12 @@ pub mod forgefi {
         Ok(())
     }
 
-    // 🚨 NEW: The Squad Zombie Burn Instruction 🚨
     pub fn acknowledge_squad_failure(_ctx: Context<AcknowledgeSquadFailure>) -> Result<()> {
+        Ok(())
+    }
+
+    // 🚨 NEW: Claim Victory and Burn Squad Vault 🚨
+    pub fn resolve_squad_stake(_ctx: Context<ResolveSquadStake>) -> Result<()> {
         Ok(())
     }
 }
@@ -395,7 +406,7 @@ pub struct VerifyWorkout<'info> {
 pub struct ResolveStake<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, close = user, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump)]
+    #[account(mut, close = user, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.days_completed + user_stake.missed_days >= user_stake.days_committed @ ErrorCode::ProtocolNotComplete)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -417,7 +428,6 @@ pub struct AcknowledgeFailure<'info> {
     pub user_stake: Account<'info, UserStake>,
 }
 
-// 🚨 DUAL SEEDS IMPLEMENTED BELOW 🚨
 #[derive(Accounts)]
 #[instruction(required_stake: u64, days: u16, player_two: Pubkey, player_three: Pubkey)]
 pub struct InitializeSquad<'info> {
@@ -451,12 +461,10 @@ pub struct SlashSquad<'info> {
     pub liquidator: Signer<'info>,
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
-    // 🚨 Using V2 math here since we reverted to V2 earlier 🚨
     #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
-// 🚨 NEW: The Squad Zombie Struct 🚨
 #[derive(Accounts)]
 pub struct AcknowledgeSquadFailure<'info> {
     #[account(mut)]
@@ -467,6 +475,21 @@ pub struct AcknowledgeSquadFailure<'info> {
         seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump, 
         constraint = squad_vault.missed_days == 999 @ ErrorCode::NotAZombie
+    )]
+    pub squad_vault: Account<'info, SquadVaultV2>,
+}
+
+// 🚨 NEW: The Squad Resolution Struct 🚨
+#[derive(Accounts)]
+pub struct ResolveSquadStake<'info> {
+    #[account(mut)]
+    pub player: Signer<'info>,
+    #[account(
+        mut, 
+        close = player, 
+        seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        bump = squad_vault.bump, 
+        constraint = squad_vault.days_completed + squad_vault.missed_days >= squad_vault.days_committed @ ErrorCode::ProtocolNotComplete
     )]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
