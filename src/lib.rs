@@ -35,6 +35,13 @@ pub mod forgefi {
 
     pub fn verify_workout(ctx: Context<VerifyWorkout>) -> Result<()> {
         let user_stake = &mut ctx.accounts.user_stake;
+
+        // Stop them from verifying if the protocol is already over
+        require!(
+            user_stake.days_completed + user_stake.missed_days < user_stake.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
         let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
@@ -68,6 +75,13 @@ pub mod forgefi {
         );
 
         let user_stake = &mut ctx.accounts.user_stake;
+
+        // Stop the executioner from slashing if the protocol is already over
+        require!(
+            user_stake.days_completed + user_stake.missed_days < user_stake.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
         let current_time = Clock::get()?.unix_timestamp;
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
@@ -192,7 +206,7 @@ pub mod forgefi {
 
         require!(vault.protocol_active, ErrorCode::ProtocolNotActive);
 
-        let mut time_since_last: i64 = 0;
+        let time_since_last: i64;
         let mut is_p1 = false;
         let mut is_p2 = false;
         let mut is_p3 = false;
@@ -317,6 +331,11 @@ pub mod forgefi {
 
         Ok(())
     }
+
+    // 🚨 NEW: The Squad Zombie Burn Instruction 🚨
+    pub fn acknowledge_squad_failure(_ctx: Context<AcknowledgeSquadFailure>) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[account]
@@ -437,6 +456,21 @@ pub struct SlashSquad<'info> {
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
+// 🚨 NEW: The Squad Zombie Struct 🚨
+#[derive(Accounts)]
+pub struct AcknowledgeSquadFailure<'info> {
+    #[account(mut)]
+    pub player: Signer<'info>,
+    #[account(
+        mut, 
+        close = player, 
+        seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        bump = squad_vault.bump, 
+        constraint = squad_vault.missed_days == 999 @ ErrorCode::NotAZombie
+    )]
+    pub squad_vault: Account<'info, SquadVaultV2>,
+}
+
 #[error_code]
 pub enum ErrorCode {
     #[msg("Muscles need rest. You must wait at least 10 seconds between verified workouts.")]
@@ -455,4 +489,6 @@ pub enum ErrorCode {
     NotAZombie,
     #[msg("The Blood Pact is not active yet. Waiting for all players to join.")]
     ProtocolNotActive,
+    #[msg("The protocol has concluded. Please resolve your stake to withdraw remaining funds.")]
+    ProtocolComplete,
 }
