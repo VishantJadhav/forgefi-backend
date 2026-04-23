@@ -344,7 +344,38 @@ pub mod forgefi {
     }
 
     // 🚨 NEW: Claim Victory and Burn Squad Vault 🚨
-    pub fn resolve_squad_stake(_ctx: Context<ResolveSquadStake>) -> Result<()> {
+    // 🚨 UPDATED: Mathematically divide the surviving SOL before closing 🚨
+    pub fn resolve_squad_stake(ctx: Context<ResolveSquadStake>) -> Result<()> {
+        let vault = &mut ctx.accounts.squad_vault;
+
+        let mut player_count = 2;
+        if vault.player_three != Pubkey::default() {
+            player_count = 3;
+        }
+
+        // Calculate how much we can distribute (leaving the rent-exemption to be swept by the close macro)
+        let current_balance = vault.to_account_info().lamports();
+        let rent_minimum = Rent::get()?.minimum_balance(vault.to_account_info().data_len());
+        let available_to_distribute = current_balance.saturating_sub(rent_minimum);
+
+        let share = available_to_distribute / player_count;
+
+        // Distribute to Player 1
+        vault.to_account_info().sub_lamports(share)?;
+        ctx.accounts.player_one.add_lamports(share)?;
+
+        // Distribute to Player 2
+        vault.to_account_info().sub_lamports(share)?;
+        ctx.accounts.player_two.add_lamports(share)?;
+
+        // Distribute to Player 3 (if applicable)
+        if player_count == 3 {
+            vault.to_account_info().sub_lamports(share)?;
+            ctx.accounts.player_three.add_lamports(share)?;
+        }
+
+        // After this manual distribution, the #[account(close = player)] macro
+        // will automatically sweep the remaining rent dust to whoever clicked the button.
         Ok(())
     }
 }
@@ -480,10 +511,24 @@ pub struct AcknowledgeSquadFailure<'info> {
 }
 
 // 🚨 NEW: The Squad Resolution Struct 🚨
+// 🚨 UPDATED: We need to pull the actual player accounts into the struct to pay them 🚨
 #[derive(Accounts)]
 pub struct ResolveSquadStake<'info> {
     #[account(mut)]
-    pub player: Signer<'info>,
+    pub player: Signer<'info>, // Whoever pays the gas to trigger the resolution
+
+    /// CHECK: We are just sending them their share of the SOL
+    #[account(mut, address = squad_vault.player_one)]
+    pub player_one: AccountInfo<'info>,
+
+    /// CHECK: We are just sending them their share of the SOL
+    #[account(mut, address = squad_vault.player_two)]
+    pub player_two: AccountInfo<'info>,
+
+    /// CHECK: We are just sending them their share of the SOL (Defaults to System Program if empty)
+    #[account(mut)]
+    pub player_three: AccountInfo<'info>,
+
     #[account(
         mut, 
         close = player, 
