@@ -345,6 +345,7 @@ pub mod forgefi {
 
     // 🚨 NEW: Claim Victory and Burn Squad Vault 🚨
     // 🚨 UPDATED: Mathematically divide the surviving SOL before closing 🚨
+    // 🚨 UPDATED: Added Security Check for P3 🚨
     pub fn resolve_squad_stake(ctx: Context<ResolveSquadStake>) -> Result<()> {
         let vault = &mut ctx.accounts.squad_vault;
 
@@ -353,29 +354,30 @@ pub mod forgefi {
             player_count = 3;
         }
 
-        // Calculate how much we can distribute (leaving the rent-exemption to be swept by the close macro)
         let current_balance = vault.to_account_info().lamports();
         let rent_minimum = Rent::get()?.minimum_balance(vault.to_account_info().data_len());
         let available_to_distribute = current_balance.saturating_sub(rent_minimum);
 
         let share = available_to_distribute / player_count;
 
-        // Distribute to Player 1
         vault.to_account_info().sub_lamports(share)?;
         ctx.accounts.player_one.add_lamports(share)?;
 
-        // Distribute to Player 2
         vault.to_account_info().sub_lamports(share)?;
         ctx.accounts.player_two.add_lamports(share)?;
 
         // Distribute to Player 3 (if applicable)
         if player_count == 3 {
+            // SECURITY CHECK: Ensure the provided account actually belongs to Player 3
+            require!(
+                ctx.accounts.player_three.key() == vault.player_three,
+                ErrorCode::NotInvited
+            );
+
             vault.to_account_info().sub_lamports(share)?;
             ctx.accounts.player_three.add_lamports(share)?;
         }
 
-        // After this manual distribution, the #[account(close = player)] macro
-        // will automatically sweep the remaining rent dust to whoever clicked the button.
         Ok(())
     }
 }
