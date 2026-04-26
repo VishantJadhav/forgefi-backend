@@ -1,6 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 
+// 🚨 NEW: Import the SPL Token modules
+// use anchor_spl::associated_token::AssociatedToken;
+// use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
+
 // Playground will auto-update this on build
 declare_id!("AyN3aAx2VJTSxJGaR5n9Ayhpa6inCAxaSGupxbGw1Rnz");
 
@@ -20,6 +24,10 @@ pub mod forgefi {
         user_stake.days_completed = 0;
         user_stake.missed_days = 0;
         user_stake.last_check_in = Clock::get()?.unix_timestamp;
+
+        // Default to unused when they create the pact
+        user_stake.tactical_rest_used = false;
+
         user_stake.bump = ctx.bumps.user_stake;
 
         let cpi_context = CpiContext::new(
@@ -116,6 +124,36 @@ pub mod forgefi {
     }
 
     pub fn acknowledge_failure(_ctx: Context<AcknowledgeFailure>) -> Result<()> {
+        Ok(())
+    }
+
+    pub fn use_tactical_rest(ctx: Context<UseTacticalRest>) -> Result<()> {
+        let user_stake = &mut ctx.accounts.user_stake;
+
+        // 1. You cannot rest if the protocol is already over
+        require!(
+            user_stake.days_completed + user_stake.missed_days < user_stake.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
+        // 2. You only get one lifeline per protocol
+        require!(!user_stake.tactical_rest_used, ErrorCode::RestAlreadyUsed);
+
+        // 3. Make them pay the Blood Price (0.01 SOL)
+        let fee = 10_000_000; // 0.01 SOL in lamports
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.user.to_account_info(),
+                to: ctx.accounts.treasury.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, fee)?;
+
+        // 4. Grant the rest: Push the guillotine back by 60 Devnet seconds (1 Day)
+        user_stake.tactical_rest_used = true;
+        user_stake.last_check_in += 60;
+
         Ok(())
     }
 
@@ -385,11 +423,13 @@ pub mod forgefi {
 #[account]
 pub struct UserStake {
     pub user: Pubkey,
-    pub stake_amount: u64,
+    //pub mint: Pubkey, // 🚨 NEW: Tracks which LST (e.g. JitoSOL) is locked here
+    pub stake_amount: u64, // Now represents Token balance, not Lamports
     pub days_committed: u16,
     pub days_completed: u16,
     pub missed_days: u16,
     pub last_check_in: i64,
+    pub tactical_rest_used: bool, // 🚨 NEW: Tracks the one-time lifeline
     pub bump: u8,
 }
 
@@ -398,6 +438,7 @@ pub struct SquadVaultV2 {
     pub player_one: Pubkey,
     pub player_two: Pubkey,
     pub player_three: Pubkey,
+    //pub mint: Pubkey,  // 🚨 NEW: Tracks the LST for the squad
     pub required_stake_per_player: u64,
     pub total_vault_balance: u64,
     pub days_committed: u16,
@@ -422,7 +463,7 @@ pub struct SquadVaultV2 {
 pub struct InitializeRoutine<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1, seeds = [b"stake", user.key().as_ref()], bump)]
+    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1 + 1, seeds = [b"stake", user.key().as_ref()], bump)]
     pub user_stake: Account<'info, UserStake>,
     pub system_program: Program<'info, System>,
 }
@@ -459,6 +500,21 @@ pub struct AcknowledgeFailure<'info> {
     pub user: Signer<'info>,
     #[account(mut, close = user, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie)]
     pub user_stake: Account<'info, UserStake>,
+}
+
+#[derive(Accounts)]
+pub struct UseTacticalRest<'info> {
+    #[account(mut)]
+    pub user: Signer<'info>,
+
+    #[account(mut, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump)]
+    pub user_stake: Account<'info, UserStake>,
+
+    /// CHECK: The official ForgeFi Treasury
+    #[account(mut, address = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC".parse::<Pubkey>().unwrap())]
+    pub treasury: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -561,4 +617,6 @@ pub enum ErrorCode {
     ProtocolNotActive,
     #[msg("The protocol has concluded. Please resolve your stake to withdraw remaining funds.")]
     ProtocolComplete,
+    #[msg("You have already used your Tactical Rest. No mercy.")]
+    RestAlreadyUsed,
 }
