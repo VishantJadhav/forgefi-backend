@@ -463,7 +463,7 @@ pub struct SquadVaultV2 {
 pub struct InitializeRoutine<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1 + 1, seeds = [b"stake", user.key().as_ref()], bump)]
+    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1 + 1, seeds = [b"stake_v2", user.key().as_ref()], bump)]
     pub user_stake: Account<'info, UserStake>,
     pub system_program: Program<'info, System>,
 }
@@ -472,7 +472,7 @@ pub struct InitializeRoutine<'info> {
 pub struct VerifyWorkout<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v2", user.key().as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -480,7 +480,7 @@ pub struct VerifyWorkout<'info> {
 pub struct ResolveStake<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, close = user, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.days_completed + user_stake.missed_days >= user_stake.days_committed @ ErrorCode::ProtocolNotComplete)]
+    #[account(mut, close = user, seeds = [b"stake_v2", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.days_completed + user_stake.missed_days >= user_stake.days_committed @ ErrorCode::ProtocolNotComplete)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -490,7 +490,7 @@ pub struct SlashUser<'info> {
     pub liquidator: Signer<'info>,
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
-    #[account(mut, seeds = [b"stake", user_stake.user.as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v2", user_stake.user.as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -498,7 +498,7 @@ pub struct SlashUser<'info> {
 pub struct AcknowledgeFailure<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, close = user, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie)]
+    #[account(mut, close = user, seeds = [b"stake_v2", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -507,7 +507,7 @@ pub struct UseTacticalRest<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
 
-    #[account(mut, seeds = [b"stake", user.key().as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v2", user.key().as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 
     /// CHECK: The official ForgeFi Treasury
