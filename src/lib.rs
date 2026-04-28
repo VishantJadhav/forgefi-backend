@@ -181,6 +181,8 @@ pub mod forgefi {
         vault.p2_workouts = 0;
         vault.p3_workouts = 0;
 
+        vault.tactical_rest_used = false; // 🚨 NEW: Default to unused
+
         let cpi_context = CpiContext::new(
             ctx.accounts.system_program.to_account_info(),
             system_program::Transfer {
@@ -418,6 +420,43 @@ pub mod forgefi {
 
         Ok(())
     }
+
+    pub fn use_squad_tactical_rest(ctx: Context<UseSquadTacticalRest>) -> Result<()> {
+        let vault = &mut ctx.accounts.squad_vault;
+
+        require!(vault.protocol_active, ErrorCode::ProtocolNotActive);
+
+        // Ensure the protocol isn't already over
+        require!(
+            vault.days_completed + vault.missed_days < vault.days_committed,
+            ErrorCode::ProtocolComplete
+        );
+
+        // Ensure they haven't used the lifeline yet
+        require!(!vault.tactical_rest_used, ErrorCode::RestAlreadyUsed);
+
+        // Charge the 0.01 SOL Blood Price to the player who clicked the button
+        let fee = 10_000_000;
+        let cpi_context = CpiContext::new(
+            ctx.accounts.system_program.to_account_info(),
+            system_program::Transfer {
+                from: ctx.accounts.caller.to_account_info(),
+                to: ctx.accounts.treasury.to_account_info(),
+            },
+        );
+        system_program::transfer(cpi_context, fee)?;
+
+        // Grant 60 Devnet Seconds (1 Day) of mercy to all active players
+        vault.tactical_rest_used = true;
+        vault.p1_last_check_in += 60;
+        vault.p2_last_check_in += 60;
+
+        if vault.player_three != Pubkey::default() {
+            vault.p3_last_check_in += 60;
+        }
+
+        Ok(())
+    }
 }
 
 #[account]
@@ -456,6 +495,7 @@ pub struct SquadVaultV2 {
     pub p1_last_check_in: i64,
     pub p2_last_check_in: i64,
     pub p3_last_check_in: i64,
+    pub tactical_rest_used: bool, // 🚨 NEW: 1 byte
     pub bump: u8,
 }
 
@@ -522,7 +562,7 @@ pub struct UseTacticalRest<'info> {
 pub struct InitializeSquad<'info> {
     #[account(mut)]
     pub player_one: Signer<'info>,
-    #[account(init, payer = player_one, space = 8 + 200, seeds = [b"squad_v2", player_one.key().as_ref(), player_two.as_ref()], bump)]
+    #[account(init, payer = player_one, space = 8 + 201, seeds = [b"squad_v3", player_one.key().as_ref(), player_two.as_ref()], bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -531,7 +571,7 @@ pub struct InitializeSquad<'info> {
 pub struct JoinSquad<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -540,7 +580,7 @@ pub struct JoinSquad<'info> {
 pub struct VerifySquadWorkout<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
@@ -550,7 +590,7 @@ pub struct SlashSquad<'info> {
     pub liquidator: Signer<'info>,
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
-    #[account(mut, seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
@@ -561,7 +601,7 @@ pub struct AcknowledgeSquadFailure<'info> {
     #[account(
         mut, 
         close = player, 
-        seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump, 
         constraint = squad_vault.missed_days == 999 @ ErrorCode::NotAZombie
     )]
@@ -590,11 +630,31 @@ pub struct ResolveSquadStake<'info> {
     #[account(
         mut, 
         close = player, 
-        seeds = [b"squad_v2", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump, 
         constraint = squad_vault.days_completed + squad_vault.missed_days >= squad_vault.days_committed @ ErrorCode::ProtocolNotComplete
     )]
     pub squad_vault: Account<'info, SquadVaultV2>,
+}
+
+#[derive(Accounts)]
+pub struct UseSquadTacticalRest<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+
+    #[account(
+        mut, 
+        seeds = [b"squad_v3", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        bump = squad_vault.bump,
+        constraint = caller.key() == squad_vault.player_one || caller.key() == squad_vault.player_two || caller.key() == squad_vault.player_three @ ErrorCode::NotInvited
+    )]
+    pub squad_vault: Account<'info, SquadVaultV2>,
+
+    /// CHECK: The official ForgeFi Treasury
+    #[account(mut, address = "HrAkqgXZA1fkwoJ6tdDcsu84R67yR7KCpB8NUR6oZ5NC".parse::<Pubkey>().unwrap())]
+    pub treasury: AccountInfo<'info>,
+
+    pub system_program: Program<'info, System>,
 }
 
 #[error_code]
