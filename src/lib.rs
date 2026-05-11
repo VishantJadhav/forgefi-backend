@@ -53,7 +53,7 @@ pub mod forgefi {
 
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
-        require!(time_since_last <= 60, ErrorCode::MissedDeadline);
+        require!(time_since_last <= 150, ErrorCode::MissedDeadline);
         if user_stake.days_completed > 0 {
             require!(time_since_last >= 10, ErrorCode::WorkoutTooSoon);
         }
@@ -93,7 +93,7 @@ pub mod forgefi {
 
         let time_since_last = current_time.saturating_sub(user_stake.last_check_in);
 
-        require!(time_since_last > 60, ErrorCode::DeadlineNotPassed);
+        require!(time_since_last > 150, ErrorCode::DeadlineNotPassed);
 
         let penalty_amount = user_stake.stake_amount / 10;
         let current_balance = user_stake.to_account_info().lamports();
@@ -152,7 +152,7 @@ pub mod forgefi {
 
         // 4. Grant the rest: Push the guillotine back by 60 Devnet seconds (1 Day)
         user_stake.tactical_rest_used = true;
-        user_stake.last_check_in += 60;
+        user_stake.last_check_in += 150;
 
         Ok(())
     }
@@ -271,7 +271,7 @@ pub mod forgefi {
             return err!(ErrorCode::NotInvited);
         }
 
-        require!(time_since_last <= 60, ErrorCode::MissedDeadline);
+        require!(time_since_last <= 150, ErrorCode::MissedDeadline);
 
         let player_workouts = if is_p1 {
             vault.p1_workouts
@@ -339,8 +339,8 @@ pub mod forgefi {
         }
 
         require!(
-            p1_time > 60
-                || p2_time > 60
+            p1_time > 150
+                || p2_time > 150
                 || (vault.player_three != Pubkey::default() && p3_time > 60),
             ErrorCode::DeadlineNotPassed
         );
@@ -448,11 +448,11 @@ pub mod forgefi {
 
         // Grant 60 Devnet Seconds (1 Day) of mercy to all active players
         vault.tactical_rest_used = true;
-        vault.p1_last_check_in += 60;
-        vault.p2_last_check_in += 60;
+        vault.p1_last_check_in += 150;
+        vault.p2_last_check_in += 150;
 
         if vault.player_three != Pubkey::default() {
-            vault.p3_last_check_in += 60;
+            vault.p3_last_check_in += 150;
         }
 
         Ok(())
@@ -505,7 +505,7 @@ pub struct SquadVaultV2 {
 pub struct InitializeRoutine<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1 + 1, seeds = [b"stake_v4", user.key().as_ref()], bump)]
+    #[account(init, payer = user, space = 8 + 32 + 8 + 2 + 2 + 2 + 8 + 1 + 1, seeds = [b"stake_v5", user.key().as_ref()], bump)]
     pub user_stake: Account<'info, UserStake>,
     pub system_program: Program<'info, System>,
 }
@@ -514,7 +514,7 @@ pub struct InitializeRoutine<'info> {
 pub struct VerifyWorkout<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, seeds = [b"stake_v4", user.key().as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v5", user.key().as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -522,7 +522,7 @@ pub struct VerifyWorkout<'info> {
 pub struct ResolveStake<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, close = user, seeds = [b"stake_v4", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.days_completed + user_stake.missed_days >= user_stake.days_committed @ ErrorCode::ProtocolNotComplete)]
+    #[account(mut, close = user, seeds = [b"stake_v5", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.days_completed + user_stake.missed_days >= user_stake.days_committed @ ErrorCode::ProtocolNotComplete)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -532,7 +532,7 @@ pub struct SlashUser<'info> {
     pub liquidator: Signer<'info>,
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
-    #[account(mut, seeds = [b"stake_v4", user_stake.user.as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v5", user_stake.user.as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -540,7 +540,7 @@ pub struct SlashUser<'info> {
 pub struct AcknowledgeFailure<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
-    #[account(mut, close = user, seeds = [b"stake_v4", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie)]
+    #[account(mut, close = user, seeds = [b"stake_v5", user.key().as_ref()], bump = user_stake.bump, constraint = user_stake.missed_days == 999 @ ErrorCode::NotAZombie)]
     pub user_stake: Account<'info, UserStake>,
 }
 
@@ -549,7 +549,7 @@ pub struct UseTacticalRest<'info> {
     #[account(mut)]
     pub user: Signer<'info>,
 
-    #[account(mut, seeds = [b"stake_v4", user.key().as_ref()], bump = user_stake.bump)]
+    #[account(mut, seeds = [b"stake_v5", user.key().as_ref()], bump = user_stake.bump)]
     pub user_stake: Account<'info, UserStake>,
 
     /// CHECK: The official ForgeFi Treasury
@@ -564,7 +564,7 @@ pub struct UseTacticalRest<'info> {
 pub struct InitializeSquad<'info> {
     #[account(mut)]
     pub player_one: Signer<'info>,
-    #[account(init, payer = player_one, space = 8 + 201, seeds = [b"squad_v4", player_one.key().as_ref(), player_two.as_ref()], bump)]
+    #[account(init, payer = player_one, space = 8 + 201, seeds = [b"squad_v5", player_one.key().as_ref(), player_two.as_ref()], bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -573,7 +573,7 @@ pub struct InitializeSquad<'info> {
 pub struct JoinSquad<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v5", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
     pub system_program: Program<'info, System>,
 }
@@ -582,7 +582,7 @@ pub struct JoinSquad<'info> {
 pub struct VerifySquadWorkout<'info> {
     #[account(mut)]
     pub player: Signer<'info>,
-    #[account(mut, seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v5", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
@@ -592,7 +592,7 @@ pub struct SlashSquad<'info> {
     pub liquidator: Signer<'info>,
     #[account(mut)]
     pub treasury: AccountInfo<'info>,
-    #[account(mut, seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
+    #[account(mut, seeds = [b"squad_v5", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], bump = squad_vault.bump)]
     pub squad_vault: Account<'info, SquadVaultV2>,
 }
 
@@ -603,7 +603,7 @@ pub struct AcknowledgeSquadFailure<'info> {
     #[account(
         mut, 
         close = player, 
-        seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        seeds = [b"squad_v5", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump, 
         constraint = squad_vault.missed_days == 999 @ ErrorCode::NotAZombie
     )]
@@ -632,7 +632,7 @@ pub struct ResolveSquadStake<'info> {
     #[account(
         mut, 
         close = player, 
-        seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        seeds = [b"squad_54", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump, 
         constraint = squad_vault.days_completed + squad_vault.missed_days >= squad_vault.days_committed @ ErrorCode::ProtocolNotComplete
     )]
@@ -646,7 +646,7 @@ pub struct UseSquadTacticalRest<'info> {
 
     #[account(
         mut, 
-        seeds = [b"squad_v4", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
+        seeds = [b"squad_v5", squad_vault.player_one.as_ref(), squad_vault.player_two.as_ref()], 
         bump = squad_vault.bump,
         constraint = caller.key() == squad_vault.player_one || caller.key() == squad_vault.player_two || caller.key() == squad_vault.player_three @ ErrorCode::NotInvited
     )]
